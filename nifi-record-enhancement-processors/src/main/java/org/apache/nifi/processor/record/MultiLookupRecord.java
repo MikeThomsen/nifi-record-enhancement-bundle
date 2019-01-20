@@ -18,6 +18,10 @@ import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.record.path.FieldValue;
+import org.apache.nifi.record.path.RecordPath;
+import org.apache.nifi.record.path.RecordPathResult;
+import org.apache.nifi.record.path.util.RecordPathCache;
 import org.apache.nifi.serialization.RecordReader;
 import org.apache.nifi.serialization.RecordReaderFactory;
 import org.apache.nifi.serialization.RecordSetWriter;
@@ -34,6 +38,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -141,13 +146,14 @@ public class MultiLookupRecord extends AbstractProcessor {
     private volatile RecordSetWriterFactory writerFactory;
     private volatile boolean isAllOrNothing = false;
     private volatile List<Operation> operations;
+    private volatile RecordPathCache cache;
 
     @OnScheduled
     public void onScheduled(ProcessContext context) {
         this.readerFactory = context.getProperty(READER).asControllerService(RecordReaderFactory.class);
         this.writerFactory = context.getProperty(WRITER).asControllerService(RecordSetWriterFactory.class);
         this.isAllOrNothing = context.getProperty(ENRICHMENT_ERROR_STRATEGY).getValue().equals(STRAT_ALL_MUST_PASS.getValue());
-
+        this.cache = new RecordPathCache(100);
         this.operations = getOperations(context);
     }
 
@@ -201,6 +207,10 @@ public class MultiLookupRecord extends AbstractProcessor {
                 } else {
                     results.add(new ValidationResult.Builder().subject(entry.getKey()).explanation("No lookup service configured.").build());
                 }
+
+                if (props.get("record_path") == null) {
+                    results.add(new ValidationResult.Builder().subject(entry.getKey()).explanation("Missing property \"record_path\"").build());
+                }
             });
 
         return results;
@@ -213,24 +223,29 @@ public class MultiLookupRecord extends AbstractProcessor {
         operations.entrySet().stream()
             .forEach(entry -> {
                 String name = entry.getKey();
+                PropertyDescriptor rpProp = entry.getValue().get("record_path");
                 PropertyDescriptor mustPass = entry.getValue().get("must_pass");
                 boolean required = false;
+                String recordPath = context.getProperty(rpProp).getValue();
                 if (mustPass != null) {
                     required = context.getProperty(mustPass).asBoolean();
                 }
 
-                List<String> keys = entry
+                Map<String, String> keys = entry
                     .getValue()
                     .keySet()
                     .stream()
                     .filter(key -> !key.equals("must_pass") && !key.equals("lookup_service"))
-                    .collect(Collectors.toList());
+                    .collect(Collectors.toMap(
+                        key -> key,
+                        key -> context.getProperty(key).getValue()
+                    ));
 
                 PropertyDescriptor ls = entry.getValue().get("lookup_service");
                 LookupService service;
                 if (ls != null) {
                     service = context.getProperty(ls).asControllerService(LookupService.class);
-                    operationList.add(new Operation(name, required, keys, service));
+                    operationList.add(new Operation(name, required, keys, service, recordPath));
                 }
             });
 
@@ -259,8 +274,17 @@ public class MultiLookupRecord extends AbstractProcessor {
             nWriter.beginRecordSet();
 
             Record record;
+            long enrichedCount = 0;
+            long notEnrichedCount = 0;
             while ((record = reader.nextRecord()) != null) {
-                
+                try {
+                    executeOperations(record, input.getAttributes());
+                    eWriter.write(record);
+                    enrichedCount++;
+                } catch (SingleRecordFailureException s) {
+                    nWriter.write(record);
+                    notEnrichedCount++;
+                }
             }
 
             eWriter.finishRecordSet();
@@ -271,6 +295,9 @@ public class MultiLookupRecord extends AbstractProcessor {
             is.close();
             eOS.close();
             nOS.close();
+
+            enriched = session.putAttribute(enriched, "record.count", String.valueOf(enrichedCount));
+            notEnriched = session.putAttribute(notEnriched, "record.count", String.valueOf(notEnrichedCount));
 
             session.getProvenanceReporter().modifyContent(enriched);
             session.getProvenanceReporter().modifyContent(notEnriched);
@@ -285,17 +312,61 @@ public class MultiLookupRecord extends AbstractProcessor {
         }
     }
 
+    private void executeOperations(Record record, Map<String, String> inputAttributes) throws SingleRecordFailureException {
+        for (int x = 0; x < operations.size(); x++) {
+            Operation operation = operations.get(x);
+            try {
+                Map<String, Object> coordinates = getCoordinates(record, operation.getKeys());
+                Optional result = operation.getService().lookup(coordinates, inputAttributes);
+                RecordPath rp = cache.getCompiled(operation.recordPath);
+                RecordPathResult pathResult = rp.evaluate(record);
+                Optional<FieldValue> targetField = pathResult.getSelectedFields().findFirst();
+                if (targetField.isPresent()) {
+                    targetField.get().updateValue(result.get());
+                } else {
+                    throw new Exception(String.format("Path \"%s\" not in schema.", operation.recordPath));
+                }
+            } catch (Exception ex) {
+                if (isAllOrNothing) {
+                    throw new ProcessException("All must pass, and failure encountered.");
+                } else if (operation.isRequired()) {
+                    throw new SingleRecordFailureException();
+                }
+            }
+        }
+    }
+
+    private Map<String, Object> getCoordinates(Record record, Map<String, String> keys) {
+        Map<String, Object> retVal = new HashMap<>();
+        keys.forEach((key, value) -> {
+            RecordPath path = cache.getCompiled(value);
+            RecordPathResult result = path.evaluate(record);
+            Optional<FieldValue> field =  result.getSelectedFields().findFirst();
+            if (field.isPresent()) {
+                retVal.put(key, field.get().getValue());
+            } else {
+                retVal.put(key, null);
+            }
+        });
+
+        return retVal;
+    }
+
+    static class SingleRecordFailureException extends Exception { }
+
     static class Operation {
         private String operationName;
         private boolean required;
-        private List<String> keys;
+        private Map<String, String> keys;
         private LookupService service;
+        private String recordPath;
 
-        Operation(String operationName, boolean required, List<String> keys, LookupService service) {
+        Operation(String operationName, boolean required, Map<String, String> keys, LookupService service, String recordPath) {
             this.operationName = operationName;
             this.required = required;
             this.keys = keys;
             this.service = service;
+            this.recordPath = recordPath;
         }
 
         public String getOperationName() {
@@ -306,12 +377,16 @@ public class MultiLookupRecord extends AbstractProcessor {
             return required;
         }
 
-        public List<String> getKeys() {
+        public Map<String, String> getKeys() {
             return keys;
         }
 
         public LookupService getService() {
             return service;
+        }
+
+        public String getRecordPath() {
+            return recordPath;
         }
     }
 }

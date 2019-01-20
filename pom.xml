@@ -82,6 +82,11 @@
             </dependency>
             <dependency>
                 <groupId>org.apache.nifi</groupId>
+                <artifactId>nifi-record-path</artifactId>
+                <version>${nifi.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.nifi</groupId>
                 <artifactId>nifi-record-serialization-service-api</artifactId>
                 <version>${nifi.version}</version>
             </dependency>
