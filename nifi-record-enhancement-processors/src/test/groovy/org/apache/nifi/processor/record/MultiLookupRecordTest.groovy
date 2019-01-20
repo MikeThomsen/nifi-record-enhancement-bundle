@@ -1,6 +1,8 @@
 package org.apache.nifi.processor.record
 
 import org.apache.nifi.json.JsonRecordSetWriter
+import org.apache.nifi.processor.record.components.MockMultiKeyLookupService
+import org.apache.nifi.processor.record.components.MockNoKeyLookupService
 import org.apache.nifi.schema.access.SchemaAccessUtils
 import org.apache.nifi.serialization.record.MockRecordParser
 import org.apache.nifi.serialization.record.MockSchemaRegistry
@@ -50,5 +52,33 @@ class MultiLookupRecordTest {
             assert it.subject == "test"
             assert it.explanation.toLowerCase().contains("lookup")
         }
+    }
+
+    @Test
+    void testNoKeyLookupService() {
+        def service = new MockNoKeyLookupService()
+        runner.addControllerService("nokey", service)
+        runner.setProperty("test.lookup_service", "nokey")
+        runner.setProperty("test.record_path", "/key")
+        runner.enableControllerService(service)
+        runner.assertValid()
+    }
+
+    @Test
+    void testMultiKeyMissing() {
+        def service = new MockMultiKeyLookupService()
+        runner.addControllerService("multi", service)
+        runner.setProperty("test.lookup_service", "multi")
+        runner.setProperty("test.record_path", "/key")
+        runner.enableControllerService(service)
+        runner.assertNotValid()
+
+        def context = (MockProcessContext)runner.processContext
+        def results = context.validate()
+
+        assertEquals("Wrong size", 3, results.size())
+        assertEquals(1, results.findAll { it.explanation.contains("first")}.size())
+        assertEquals(1, results.findAll { it.explanation.contains("middle")}.size())
+        assertEquals(1, results.findAll { it.explanation.contains("last")}.size())
     }
 }
