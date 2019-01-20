@@ -7,7 +7,7 @@ import org.apache.nifi.lookup.LookupService
 class MockNoKeyLookupService extends AbstractControllerService implements LookupService<String> {
     @Override
     Optional<String> lookup(Map<String, Object> map) throws LookupFailureException {
-        return "Hello, world"
+        return Optional.ofNullable("Hello, world")
     }
 
     @Override

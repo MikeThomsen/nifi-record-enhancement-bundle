@@ -1,0 +1,11 @@
+{
+    "name": "MessageRecord",
+    "type": "record",
+    "fields": [
+        { "name": "first_name", "type": "string" },
+        { "name": "middle_name", "type": "string" },
+        { "name": "last_name", "type": "string" },
+        { "name": "full_name", "type": [ "null", "string" ] },
+        { "name": "message", "type": ["null", "string" ] }
+    ]
+}

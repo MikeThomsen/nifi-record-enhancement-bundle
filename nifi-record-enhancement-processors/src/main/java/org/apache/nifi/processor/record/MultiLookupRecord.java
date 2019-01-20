@@ -135,8 +135,7 @@ public class MultiLookupRecord extends AbstractProcessor {
                 .description("Controlls whether or not this operation must succeed for the result to be considered a success.")
                 .defaultValue(TRUE.getValue());
         } else {
-            builder.addValidator(StandardValidators.NON_EMPTY_EL_VALIDATOR)
-                    .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES);
+            builder.addValidator(StandardValidators.NON_EMPTY_EL_VALIDATOR);
         }
 
         return builder.build();
@@ -238,7 +237,7 @@ public class MultiLookupRecord extends AbstractProcessor {
                     .filter(key -> !key.equals("must_pass") && !key.equals("lookup_service"))
                     .collect(Collectors.toMap(
                         key -> key,
-                        key -> context.getProperty(key).getValue()
+                        key -> context.getProperty(String.format("%s.%s", name, key)).getValue()
                     ));
 
                 PropertyDescriptor ls = entry.getValue().get("lookup_service");
@@ -297,11 +296,11 @@ public class MultiLookupRecord extends AbstractProcessor {
             nOS.close();
 
             enriched = session.putAttribute(enriched, "record.count", String.valueOf(enrichedCount));
-            notEnriched = session.putAttribute(notEnriched, "record.count", String.valueOf(notEnrichedCount));
-
             session.getProvenanceReporter().modifyContent(enriched);
-            session.getProvenanceReporter().modifyContent(notEnriched);
             session.transfer(enriched, REL_ENRICHED);
+
+            notEnriched = session.putAttribute(notEnriched, "record.count", String.valueOf(notEnrichedCount));
+            session.getProvenanceReporter().modifyContent(notEnriched);
             session.transfer(notEnriched, REL_NOT_ENRICHED);
             session.transfer(input, REL_ORIGINAL);
         } catch (Exception ex) {
