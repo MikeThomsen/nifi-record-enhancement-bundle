@@ -4,6 +4,7 @@ import groovy.json.JsonSlurper
 import org.apache.avro.Schema
 import org.apache.nifi.avro.AvroTypeUtil
 import org.apache.nifi.json.JsonRecordSetWriter
+import org.apache.nifi.processor.Relationship
 import org.apache.nifi.processor.record.components.MockMultiKeyLookupService
 import org.apache.nifi.processor.record.components.MockNoKeyLookupService
 import org.apache.nifi.schema.access.SchemaAccessUtils
@@ -99,14 +100,25 @@ class MultiLookupRecordTest {
         assertEquals(1, results.findAll { it.explanation.contains("path") }.size())
     }
 
-    @Test
-    void testBothServices() {
-        def noKey = new MockNoKeyLookupService()
+    void populateReader() {
+        def schemaText = this.getClass().getResourceAsStream("/message.avsc").text
+        def schema = AvroTypeUtil.createSchema(new Schema.Parser().parse(schemaText))
+        registry.addSchema("message", schema)
+        schema.fields.each { field -> reader.addSchemaField(field) }
+
+        reader.addRecord("John", "Q.", "Public", null, null)
+    }
+
+    void setupBothLookupServices(boolean forceFail, boolean required) {
+        def noKey = new MockNoKeyLookupService(causeFailure: forceFail)
         def multi = new MockMultiKeyLookupService()
         runner.addControllerService("nokey", noKey)
         runner.addControllerService("multi", multi)
         runner.setProperty("simple.lookup_service", "nokey")
         runner.setProperty("simple.record_path", "/message")
+        if (required) {
+            runner.setProperty("simple.must_pass", "true")
+        }
         runner.setProperty("complex.lookup_service", "multi")
         runner.setProperty("complex.record_path", "/full_name")
         runner.setProperty("complex.first", "/first_name")
@@ -115,13 +127,21 @@ class MultiLookupRecordTest {
         runner.enableControllerService(noKey)
         runner.enableControllerService(multi)
         runner.assertValid()
+    }
 
-        def schemaText = this.getClass().getResourceAsStream("/message.avsc").text
-        def schema = AvroTypeUtil.createSchema(new Schema.Parser().parse(schemaText))
-        registry.addSchema("message", schema)
-        schema.fields.each { field -> reader.addSchemaField(field) }
+    Map<String, Object> getRecord(Relationship relationship) {
+        def ff = runner.getFlowFilesForRelationship(relationship)[0]
+        def raw = runner.getContentAsByteArray(ff)
+        def str = new String(raw)
+        def json = new JsonSlurper().parseText(str)
+        assert json instanceof List
+        json[0]
+    }
 
-        reader.addRecord("John", "Q.", "Public", null, null)
+    @Test
+    void testBothServices() {
+        setupBothLookupServices(false, false)
+        populateReader()
         runner.enqueue("", [ "schema.name": "message" ])
         runner.run()
 
@@ -130,18 +150,29 @@ class MultiLookupRecordTest {
         runner.assertTransferCount(MultiLookupRecord.REL_NOT_ENRICHED, 1)
         runner.assertTransferCount(MultiLookupRecord.REL_ENRICHED, 1)
 
-        def ff = runner.getFlowFilesForRelationship(MultiLookupRecord.REL_ENRICHED)[0]
-        def raw = runner.getContentAsByteArray(ff)
-        def str = new String(raw)
-        def json = new JsonSlurper().parseText(str)
-
-        assert json instanceof List
-        json = json[0]
+        def json = getRecord(MultiLookupRecord.REL_ENRICHED)
 
         assertEquals("John", json["first_name"])
         assertEquals("Q.", json["middle_name"])
         assertEquals("Public", json["last_name"])
         assertEquals("John Q. Public", json["full_name"])
         assertEquals("Hello, world", json["message"])
+    }
+
+    @Test
+    void testSomePassSomeFail() {
+        setupBothLookupServices(true, true)
+        populateReader()
+        runner.enqueue("", [ "schema.name": "message" ])
+        runner.run()
+
+        runner.assertTransferCount(MultiLookupRecord.REL_FAILURE, 0)
+        runner.assertTransferCount(MultiLookupRecord.REL_ORIGINAL, 1)
+        runner.assertTransferCount(MultiLookupRecord.REL_NOT_ENRICHED, 1)
+        runner.assertTransferCount(MultiLookupRecord.REL_ENRICHED, 1)
+
+        def json = getRecord(MultiLookupRecord.REL_NOT_ENRICHED)
+
+        assertEquals(json.keySet().size(), 5)
     }
 }
