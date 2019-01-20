@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @CapabilityDescription("This lookup processor is different in intent from the single lookup processor. It is meant to " +
         "allow multiple lookup enrichments within the same session to reduce amount of hops that have to be done for a record set " +
@@ -139,22 +140,20 @@ public class MultiLookupRecord extends AbstractProcessor {
     private volatile RecordReaderFactory readerFactory;
     private volatile RecordSetWriterFactory writerFactory;
     private volatile boolean isAllOrNothing = false;
-    private volatile List<LookupService> services;
+    private volatile List<Operation> operations;
 
     @OnScheduled
     public void onScheduled(ProcessContext context) {
         this.readerFactory = context.getProperty(READER).asControllerService(RecordReaderFactory.class);
         this.writerFactory = context.getProperty(WRITER).asControllerService(RecordSetWriterFactory.class);
         this.isAllOrNothing = context.getProperty(ENRICHMENT_ERROR_STRATEGY).getValue().equals(STRAT_ALL_MUST_PASS.getValue());
+
+        this.operations = getOperations(context);
     }
 
-    @Override
-    protected Collection<ValidationResult> customValidate(ValidationContext validationContext) {
-        List<ValidationResult> results = new ArrayList<>();
+    private Map<String, Map<String, PropertyDescriptor>> getOperationsMap(Stream<PropertyDescriptor> input) {
         Map<String, Map<String, PropertyDescriptor>> operations = new HashMap<>();
-
-        validationContext.getProperties().keySet()
-            .stream().filter(prop -> prop.isDynamic())
+        input.filter(prop -> prop.isDynamic())
             .forEach(prop -> {
                 String name = prop.getName();
                 String[] parts = name.split("\\.");
@@ -168,6 +167,13 @@ public class MultiLookupRecord extends AbstractProcessor {
 
                 props.put(parts[1], prop);
             });
+        return operations;
+    }
+
+    @Override
+    protected Collection<ValidationResult> customValidate(ValidationContext validationContext) {
+        List<ValidationResult> results = new ArrayList<>();
+        Map<String, Map<String, PropertyDescriptor>> operations = getOperationsMap(validationContext.getProperties().keySet().stream());
 
         operations
             .entrySet()
@@ -198,6 +204,37 @@ public class MultiLookupRecord extends AbstractProcessor {
             });
 
         return results;
+    }
+
+    private List<Operation> getOperations(ProcessContext context) {
+        Map<String, Map<String, PropertyDescriptor>> operations = getOperationsMap(context.getProperties().keySet().stream());
+        List<Operation> operationList = new ArrayList<>();
+
+        operations.entrySet().stream()
+            .forEach(entry -> {
+                String name = entry.getKey();
+                PropertyDescriptor mustPass = entry.getValue().get("must_pass");
+                boolean required = false;
+                if (mustPass != null) {
+                    required = context.getProperty(mustPass).asBoolean();
+                }
+
+                List<String> keys = entry
+                    .getValue()
+                    .keySet()
+                    .stream()
+                    .filter(key -> !key.equals("must_pass") && !key.equals("lookup_service"))
+                    .collect(Collectors.toList());
+
+                PropertyDescriptor ls = entry.getValue().get("lookup_service");
+                LookupService service;
+                if (ls != null) {
+                    service = context.getProperty(ls).asControllerService(LookupService.class);
+                    operationList.add(new Operation(name, required, keys, service));
+                }
+            });
+
+        return operationList;
     }
 
     @Override
@@ -245,6 +282,36 @@ public class MultiLookupRecord extends AbstractProcessor {
             session.remove(enriched);
             session.remove(notEnriched);
             session.transfer(input, REL_FAILURE);
+        }
+    }
+
+    static class Operation {
+        private String operationName;
+        private boolean required;
+        private List<String> keys;
+        private LookupService service;
+
+        Operation(String operationName, boolean required, List<String> keys, LookupService service) {
+            this.operationName = operationName;
+            this.required = required;
+            this.keys = keys;
+            this.service = service;
+        }
+
+        public String getOperationName() {
+            return operationName;
+        }
+
+        public boolean isRequired() {
+            return required;
+        }
+
+        public List<String> getKeys() {
+            return keys;
+        }
+
+        public LookupService getService() {
+            return service;
         }
     }
 }
