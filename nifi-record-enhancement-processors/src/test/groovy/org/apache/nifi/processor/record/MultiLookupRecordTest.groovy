@@ -17,6 +17,8 @@ import static org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
+import static groovy.json.JsonOutput.*
+
 class MultiLookupRecordTest {
     TestRunner runner
     MockSchemaRegistry registry
@@ -101,16 +103,22 @@ class MultiLookupRecordTest {
     }
 
     void populateReader() {
+        populateReader(1)
+    }
+
+    void populateReader(int docs) {
         def schemaText = this.getClass().getResourceAsStream("/message.avsc").text
         def schema = AvroTypeUtil.createSchema(new Schema.Parser().parse(schemaText))
         registry.addSchema("message", schema)
         schema.fields.each { field -> reader.addSchemaField(field) }
 
-        reader.addRecord("John", "Q.", "Public", null, null)
+        0.upto(docs) {
+            reader.addRecord("John", "Q.", "Public", null, null)
+        }
     }
 
-    void setupBothLookupServices(boolean forceFail, boolean required) {
-        def noKey = new MockNoKeyLookupService(causeFailure: forceFail)
+    void setupBothLookupServices(boolean forceFail, boolean required, int failLimit) {
+        def noKey = new MockNoKeyLookupService(causeFailure: forceFail, failLimit: failLimit)
         def multi = new MockMultiKeyLookupService()
         runner.addControllerService("nokey", noKey)
         runner.addControllerService("multi", multi)
@@ -129,18 +137,18 @@ class MultiLookupRecordTest {
         runner.assertValid()
     }
 
-    Map<String, Object> getRecord(Relationship relationship) {
+    List<Map<String, Object>> getRecord(Relationship relationship) {
         def ff = runner.getFlowFilesForRelationship(relationship)[0]
         def raw = runner.getContentAsByteArray(ff)
         def str = new String(raw)
         def json = new JsonSlurper().parseText(str)
         assert json instanceof List
-        json[0]
+        json
     }
 
     @Test
     void testBothServices() {
-        setupBothLookupServices(false, false)
+        setupBothLookupServices(false, false, 1)
         populateReader()
         runner.enqueue("", [ "schema.name": "message" ])
         runner.run()
@@ -150,7 +158,7 @@ class MultiLookupRecordTest {
         runner.assertTransferCount(MultiLookupRecord.REL_NOT_ENRICHED, 1)
         runner.assertTransferCount(MultiLookupRecord.REL_ENRICHED, 1)
 
-        def json = getRecord(MultiLookupRecord.REL_ENRICHED)
+        def json = getRecord(MultiLookupRecord.REL_ENRICHED)[0]
 
         assertEquals("John", json["first_name"])
         assertEquals("Q.", json["middle_name"])
@@ -161,7 +169,7 @@ class MultiLookupRecordTest {
 
     @Test
     void testSomePassSomeFail() {
-        setupBothLookupServices(true, true)
+        setupBothLookupServices(true, true, 1)
         populateReader()
         runner.enqueue("", [ "schema.name": "message" ])
         runner.run()
@@ -171,8 +179,29 @@ class MultiLookupRecordTest {
         runner.assertTransferCount(MultiLookupRecord.REL_NOT_ENRICHED, 1)
         runner.assertTransferCount(MultiLookupRecord.REL_ENRICHED, 1)
 
-        def json = getRecord(MultiLookupRecord.REL_NOT_ENRICHED)
+        def json = getRecord(MultiLookupRecord.REL_NOT_ENRICHED)[0]
 
         assertEquals(json.keySet().size(), 5)
+    }
+
+    @Test
+    void testFailAll() {
+        runner.setProperty(MultiLookupRecord.ENRICHMENT_ERROR_STRATEGY, MultiLookupRecord.STRAT_ALL_MUST_PASS)
+        setupBothLookupServices(true, true, 2)
+        populateReader(2)
+        runner.enqueue(prettyPrint(toJson([
+            [ msg: "x"],
+            [ msg: "y"]
+        ])), [ "schema.name": "message" ])
+        runner.run()
+
+        runner.assertTransferCount(MultiLookupRecord.REL_FAILURE, 1)
+        runner.assertTransferCount(MultiLookupRecord.REL_ORIGINAL, 0)
+        runner.assertTransferCount(MultiLookupRecord.REL_NOT_ENRICHED, 0)
+        runner.assertTransferCount(MultiLookupRecord.REL_ENRICHED, 0)
+
+        def json = getRecord(MultiLookupRecord.REL_FAILURE)
+
+        assertEquals(2, json.size())
     }
 }
