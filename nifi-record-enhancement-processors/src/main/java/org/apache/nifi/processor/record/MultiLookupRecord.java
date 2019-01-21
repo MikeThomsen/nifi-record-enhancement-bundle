@@ -80,11 +80,22 @@ public class MultiLookupRecord extends AbstractProcessor {
         .addValidator(Validator.VALID)
         .build();
 
+    public static final PropertyDescriptor SUPPRESS_EMPTY_FLOWFILES = new PropertyDescriptor.Builder()
+        .name("multi-lookup-suppress-empty-flowfiles")
+        .displayName("Suppress Empty Output Flowfiles")
+        .description("If no records are added to the flowfiles sent to the relationships enriched/not enriched, a flowfile " +
+                "will not be sent if this is set to true.")
+        .allowableValues("true", "false")
+        .defaultValue("false")
+        .addValidator(StandardValidators.BOOLEAN_VALIDATOR)
+        .required(true)
+        .build();
+
     public static final AllowableValue TRUE = new AllowableValue("true", "True", "");
     public static final AllowableValue FALSE = new AllowableValue("false", "False", "");
 
     private static final List<PropertyDescriptor> PROPERTY_DESCRIPTORS = Collections.unmodifiableList(Arrays.asList(
-        READER, WRITER, ENRICHMENT_ERROR_STRATEGY
+        READER, WRITER, ENRICHMENT_ERROR_STRATEGY, SUPPRESS_EMPTY_FLOWFILES
     ));
 
     public static final Relationship REL_ENRICHED = new Relationship.Builder()
@@ -144,6 +155,7 @@ public class MultiLookupRecord extends AbstractProcessor {
     private volatile RecordReaderFactory readerFactory;
     private volatile RecordSetWriterFactory writerFactory;
     private volatile boolean isAllOrNothing = false;
+    private volatile boolean suppressEmpty = false;
     private volatile List<Operation> operations;
     private volatile RecordPathCache cache;
 
@@ -152,6 +164,7 @@ public class MultiLookupRecord extends AbstractProcessor {
         this.readerFactory = context.getProperty(READER).asControllerService(RecordReaderFactory.class);
         this.writerFactory = context.getProperty(WRITER).asControllerService(RecordSetWriterFactory.class);
         this.isAllOrNothing = context.getProperty(ENRICHMENT_ERROR_STRATEGY).getValue().equals(STRAT_ALL_MUST_PASS.getValue());
+        this.suppressEmpty = context.getProperty(SUPPRESS_EMPTY_FLOWFILES).asBoolean();
         this.cache = new RecordPathCache(100);
         this.operations = getOperations(context);
     }
@@ -295,13 +308,22 @@ public class MultiLookupRecord extends AbstractProcessor {
             eOS.close();
             nOS.close();
 
-            enriched = session.putAttribute(enriched, "record.count", String.valueOf(enrichedCount));
-            session.getProvenanceReporter().modifyContent(enriched);
-            session.transfer(enriched, REL_ENRICHED);
+            if (!suppressEmpty || (suppressEmpty && enrichedCount > 0)) {
+                enriched = session.putAttribute(enriched, "record.count", String.valueOf(enrichedCount));
+                session.getProvenanceReporter().modifyContent(enriched);
+                session.transfer(enriched, REL_ENRICHED);
+            } else {
+                session.remove(enriched);
+            }
 
-            notEnriched = session.putAttribute(notEnriched, "record.count", String.valueOf(notEnrichedCount));
-            session.getProvenanceReporter().modifyContent(notEnriched);
-            session.transfer(notEnriched, REL_NOT_ENRICHED);
+            if (!suppressEmpty || (suppressEmpty && notEnrichedCount > 0)) {
+                notEnriched = session.putAttribute(notEnriched, "record.count", String.valueOf(notEnrichedCount));
+                session.getProvenanceReporter().modifyContent(notEnriched);
+                session.transfer(notEnriched, REL_NOT_ENRICHED);
+            } else {
+                session.remove(notEnriched);
+            }
+
             session.transfer(input, REL_ORIGINAL);
         } catch (Exception ex) {
             getLogger().error("Error handling enrichment.", ex);

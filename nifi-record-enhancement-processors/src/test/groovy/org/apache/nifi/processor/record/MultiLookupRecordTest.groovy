@@ -204,4 +204,22 @@ class MultiLookupRecordTest {
 
         assertEquals(2, json.size())
     }
+
+    @Test
+    void testSuppressEmpty() {
+        runner.setProperty(MultiLookupRecord.SUPPRESS_EMPTY_FLOWFILES, "true")
+        setupBothLookupServices(false, false, 1)
+        populateReader()
+        runner.enqueue("", [ "schema.name": "message" ])
+        runner.run()
+
+        runner.assertTransferCount(MultiLookupRecord.REL_FAILURE, 0)
+        runner.assertTransferCount(MultiLookupRecord.REL_ORIGINAL, 1)
+        runner.assertTransferCount(MultiLookupRecord.REL_NOT_ENRICHED, 0)
+        runner.assertTransferCount(MultiLookupRecord.REL_ENRICHED, 1)
+
+        def json = getRecord(MultiLookupRecord.REL_ENRICHED)[0]
+
+        assertEquals(json.keySet().size(), 5)
+    }
 }
