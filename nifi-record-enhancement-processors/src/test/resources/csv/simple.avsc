@@ -1,0 +1,8 @@
+{
+    "type": "record",
+    "name": "SimpleRecord",
+    "fields": [
+        { "name": "first_name", "type": "string", "aliases": [ "First Name" ] },
+        { "name": "last_name", "type": "string", "aliases": [ "Last Name" ] }
+    ]
+}

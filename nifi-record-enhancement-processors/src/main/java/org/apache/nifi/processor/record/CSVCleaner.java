@@ -18,6 +18,9 @@ import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.schemaregistry.services.SchemaRegistry;
+import org.apache.nifi.serialization.record.RecordField;
+import org.apache.nifi.serialization.record.RecordSchema;
+import org.apache.nifi.serialization.record.StandardSchemaIdentifier;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -98,12 +101,15 @@ public class CSVCleaner extends AbstractProcessor {
         return RELATIONSHIPS;
     }
 
+    private volatile SchemaRegistry registry;
+
     @OnScheduled
     public void storeCsvFormat(final ProcessContext context) {
         this.csvFormat = CSVUtils.createCSVFormat(context);
         this.firstLineIsHeader = context.getProperty(CSVUtils.FIRST_LINE_IS_HEADER).asBoolean();
         this.ignoreHeader = context.getProperty(CSVUtils.IGNORE_CSV_HEADER).asBoolean();
         this.charSet = context.getProperty(CSVUtils.CHARSET).getValue();
+        this.registry = context.getProperty(SCHEMA_REGISTRY).asControllerService(SchemaRegistry.class);
     }
 
     @Override
@@ -113,15 +119,33 @@ public class CSVCleaner extends AbstractProcessor {
             return;
         }
 
+        final String schemaName = context.getProperty(SCHEMA_NAME).evaluateAttributeExpressions(input).getValue();
         FlowFile output = session.create(input);
         try (InputStream is = session.read(input);
              OutputStream os = session.write(output)) {
+            RecordSchema schema = registry.retrieveSchema(new StandardSchemaIdentifier.Builder().name(schemaName).build());
+            if (schema == null) {
+                throw new ProcessException(String.format("Could not retrieve schema named \"%s.\"", schemaName));
+            }
+
             final CSVParser csvParser = new CSVParser(new InputStreamReader(new BOMInputStream(is), charSet), csvFormat);
             final CSVPrinter csvWriter = new CSVPrinter(new OutputStreamWriter(os), csvFormat);
 
+            boolean foundHeader = false;
+            List<String> headers = new ArrayList<>();
             for (CSVRecord record : csvParser) {
-                getLogger().debug("dsfasdfasdffdsfddfsdfsfds");
-                getLogger().debug(record.get("First name"));
+                if (!foundHeader && isHeaderLine(record, schema)) {
+                    foundHeader = true;
+                    for (String field : record) {
+                        headers.add(field);
+                    }
+                    getLogger().debug("Found headers: " + headers.toString());
+                } else if (isHeaderLine(record, schema)) {
+                    getLogger().debug("Skipping!");
+                    continue;
+                } else {
+                    getLogger().debug("Got record?");
+                }
             }
 
             csvParser.close();
@@ -137,5 +161,26 @@ public class CSVCleaner extends AbstractProcessor {
             session.remove(output);
             session.transfer(input, REL_FAILURE);
         }
+    }
+
+    private boolean isHeaderLine(CSVRecord record, RecordSchema schema) {
+        int matchCount = 0;
+        int ceiling = record.size();
+        for (String field : record) {
+            for (RecordField recordField : schema.getFields()) {
+                if (recordField.getFieldName().equals(field)) {
+                    matchCount++;
+                } else {
+                    for (String alias : recordField.getAliases()) {
+                        if (alias.equals(field)) {
+                            matchCount++;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        return matchCount == ceiling;
     }
 }
