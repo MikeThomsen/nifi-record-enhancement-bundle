@@ -1,0 +1,2 @@
+org.apache.nifi.processor.record.CSVCleaner
+org.apache.nifi.processor.record.MultiLookupRecord

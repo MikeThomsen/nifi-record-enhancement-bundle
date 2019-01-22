@@ -99,5 +99,11 @@
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-record-path</artifactId>
         </dependency>
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>2.6</version>
+            <scope>compile</scope>
+        </dependency>
     </dependencies>
 </project>
