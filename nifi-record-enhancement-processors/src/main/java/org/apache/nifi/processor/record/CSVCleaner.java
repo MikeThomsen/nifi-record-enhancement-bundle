@@ -1,3 +1,7 @@
+/*
+ * Portions of this code are derived from the Apache NiFi code base.
+ */
+
 package org.apache.nifi.processor.record;
 
 import org.apache.commons.csv.CSVFormat;
@@ -68,8 +72,8 @@ public class CSVCleaner extends AbstractProcessor {
     public static final PropertyDescriptor TREAT_EMPTY_AS_NULL = new PropertyDescriptor.Builder()
         .name("csv-cleaner-treat-empty-as-null")
         .displayName("Treat Empty As Null")
-        .description("A hard-coded string or expression language statement for supplying the schema name to use for " +
-                "checking the CSV.")
+        .description("Empty fields are read by the CSV parser as empty strings, not null strings. If this is set to true, " +
+                "it will cause them to be treated as null field values when tested against the selected schema.")
         .allowableValues("true", "false")
         .defaultValue("true")
         .addValidator(StandardValidators.BOOLEAN_VALIDATOR)

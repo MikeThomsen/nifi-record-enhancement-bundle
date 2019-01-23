@@ -93,8 +93,8 @@ class CSVCleanerTest {
 
         testTransferCount(1, 0, 1)
 
-        def raw = runner.getContentAsByteArray(runner.getFlowFilesForRelationship(CSVCleaner.REL_SUCCESS)[0])
-        def str = new String(raw)
+        def ff = runner.getFlowFilesForRelationship(CSVCleaner.REL_SUCCESS)[0]
+        def raw = runner.getContentAsByteArray(ff)
         def csvReader = new CSVParser(new InputStreamReader(new ByteArrayInputStream(raw)), processor.csvFormat)
         def iterator = csvReader.iterator()
         assert iterator.hasNext()
@@ -111,5 +111,11 @@ class CSVCleanerTest {
             count++
         }
         assert count == 3
+
+        def recordCount = ff.getAttribute("record.count")
+        def originalCount = ff.getAttribute("line.count.original")
+
+        assert recordCount == "3"
+        assert originalCount == "8"
     }
 }
