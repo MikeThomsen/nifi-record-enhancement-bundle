@@ -1,0 +1,10 @@
+{
+    "type": "record",
+    "name": "ComplexRecord",
+    "fields": [
+        { "name": "buyer_first_name", "type": "string", "aliases": [ "BFirst Name" ] },
+        { "name": "buyer_last_name", "type": "string", "aliases": [ "BLast Name" ] },
+        { "name": "seller_first_name", "type": "string", "aliases": [ "SFirst Name" ] },
+        { "name": "seller_last_name", "type": "string", "aliases": [ "SLast Name" ] }
+    ]
+}

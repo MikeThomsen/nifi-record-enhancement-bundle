@@ -17,11 +17,16 @@ import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.schema.validation.SchemaValidationContext;
+import org.apache.nifi.schema.validation.StandardSchemaValidator;
 import org.apache.nifi.schemaregistry.services.SchemaRegistry;
 import org.apache.nifi.serialization.record.MapRecord;
 import org.apache.nifi.serialization.record.RecordField;
 import org.apache.nifi.serialization.record.RecordSchema;
 import org.apache.nifi.serialization.record.StandardSchemaIdentifier;
+import org.apache.nifi.serialization.record.validation.RecordSchemaValidator;
+import org.apache.nifi.serialization.record.validation.SchemaValidationResult;
+import org.apache.nifi.util.StringUtils;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -60,12 +65,23 @@ public class CSVCleaner extends AbstractProcessor {
         .addValidator(StandardValidators.NON_EMPTY_EL_VALIDATOR)
         .required(true)
         .build();
+    public static final PropertyDescriptor TREAT_EMPTY_AS_NULL = new PropertyDescriptor.Builder()
+        .name("csv-cleaner-treat-empty-as-null")
+        .displayName("Treat Empty As Null")
+        .description("A hard-coded string or expression language statement for supplying the schema name to use for " +
+                "checking the CSV.")
+        .allowableValues("true", "false")
+        .defaultValue("true")
+        .addValidator(StandardValidators.BOOLEAN_VALIDATOR)
+        .required(true)
+        .build();
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
         final List<PropertyDescriptor> properties = new ArrayList<>(super.getSupportedPropertyDescriptors());
         properties.add(SCHEMA_REGISTRY);
         properties.add(SCHEMA_NAME);
+        properties.add(TREAT_EMPTY_AS_NULL);
         properties.add(CSVUtils.CSV_FORMAT);
         properties.add(CSVUtils.VALUE_SEPARATOR);
         properties.add(CSVUtils.FIRST_LINE_IS_HEADER);
@@ -104,14 +120,16 @@ public class CSVCleaner extends AbstractProcessor {
     }
 
     private volatile SchemaRegistry registry;
+    private boolean emptyAsNull;
 
     @OnScheduled
-    public void storeCsvFormat(final ProcessContext context) {
+    public void onScheduled(final ProcessContext context) {
         this.csvFormat = CSVUtils.createCSVFormat(context);
         this.firstLineIsHeader = context.getProperty(CSVUtils.FIRST_LINE_IS_HEADER).asBoolean();
         this.ignoreHeader = context.getProperty(CSVUtils.IGNORE_CSV_HEADER).asBoolean();
         this.charSet = context.getProperty(CSVUtils.CHARSET).getValue();
         this.registry = context.getProperty(SCHEMA_REGISTRY).asControllerService(SchemaRegistry.class);
+        this.emptyAsNull = context.getProperty(TREAT_EMPTY_AS_NULL).asBoolean();
     }
 
     @Override
@@ -126,6 +144,8 @@ public class CSVCleaner extends AbstractProcessor {
         try (InputStream is = session.read(input);
              OutputStream os = session.write(output)) {
             RecordSchema schema = registry.retrieveSchema(new StandardSchemaIdentifier.Builder().name(schemaName).build());
+            final SchemaValidationContext validationContext = new SchemaValidationContext(schema, false, false);
+            final RecordSchemaValidator validator = new StandardSchemaValidator(validationContext);
             if (schema == null) {
                 throw new ProcessException(String.format("Could not retrieve schema named \"%s.\"", schemaName));
             }
@@ -135,29 +155,28 @@ public class CSVCleaner extends AbstractProcessor {
 
             boolean foundHeader = false;
             List<String> headers = new ArrayList<>();
+            long start = 0;
+            long added = 0;
             for (CSVRecord record : csvParser) {
                 if (!foundHeader && isHeaderLine(record, schema)) {
                     foundHeader = true;
                     for (String field : record) {
                         headers.add(field);
                     }
-                    getLogger().debug("Found headers: " + headers.toString());
                     csvWriter.printRecord(headers.toArray());
-                    csvWriter.println();
                 } else if (isHeaderLine(record, schema)) {
-                    getLogger().debug("Skipping!");
                     continue;
                 } else {
-                    getLogger().debug("Got record?");
-                    if (testRecordAgainstSchema(record, headers, schema)) {
+                    if (testRecordAgainstSchema(record, headers, schema, validator)) {
                         List<String> values = new ArrayList<>();
                         for (String value : record) {
                             values.add(value);
                         }
                         csvWriter.printRecord(values.toArray());
-                        csvWriter.println();
+                        added++;
                     }
                 }
+                start++;
             }
 
             csvParser.close();
@@ -165,6 +184,12 @@ public class CSVCleaner extends AbstractProcessor {
 
             is.close();
             os.close();
+
+            Map<String, String> attrs = new HashMap<>();
+            attrs.put("record.count", String.valueOf(added));
+            attrs.put("line.count.original", String.valueOf(start));
+
+            output = session.putAllAttributes(output, attrs);
 
             session.transfer(input, REL_ORIGINAL);
             session.transfer(output, REL_SUCCESS);
@@ -196,19 +221,20 @@ public class CSVCleaner extends AbstractProcessor {
         return matchCount == ceiling;
     }
 
-    private boolean testRecordAgainstSchema(CSVRecord record, List<String> headers, RecordSchema schema) {
+    private boolean testRecordAgainstSchema(CSVRecord record, List<String> headers, RecordSchema schema, RecordSchemaValidator validator) {
         if (record.size() != headers.size()) {
             return false;
         }
 
         Map<String, Object> obj = new HashMap<>();
         for (int x = 0; x < record.size(); x++) {
-            obj.put(headers.get(x), record.get(x));
+            Object val = (emptyAsNull && StringUtils.isEmpty(record.get(x))) ? null : record.get(x);
+            obj.put(headers.get(x), val);
         }
 
         try {
-            new MapRecord(schema, obj);
-            return true;
+            SchemaValidationResult result = validator.validate(new MapRecord(schema, obj));
+            return result.isValid();
         } catch (Exception ex) {
             return false;
         }
