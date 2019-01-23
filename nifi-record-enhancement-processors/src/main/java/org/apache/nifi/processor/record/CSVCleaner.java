@@ -18,6 +18,7 @@ import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.schemaregistry.services.SchemaRegistry;
+import org.apache.nifi.serialization.record.MapRecord;
 import org.apache.nifi.serialization.record.RecordField;
 import org.apache.nifi.serialization.record.RecordSchema;
 import org.apache.nifi.serialization.record.StandardSchemaIdentifier;
@@ -29,13 +30,14 @@ import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class CSVCleaner extends AbstractProcessor {
-    private volatile String csvParser;
-    private volatile CSVFormat csvFormat;
+    protected volatile CSVFormat csvFormat;
     private volatile boolean firstLineIsHeader;
     private volatile boolean ignoreHeader;
     private volatile String charSet;
@@ -129,7 +131,7 @@ public class CSVCleaner extends AbstractProcessor {
             }
 
             final CSVParser csvParser = new CSVParser(new InputStreamReader(new BOMInputStream(is), charSet), csvFormat);
-            final CSVPrinter csvWriter = new CSVPrinter(new OutputStreamWriter(os), csvFormat);
+            final CSVPrinter csvWriter = new CSVPrinter(new OutputStreamWriter(os), csvFormat.withRecordSeparator("\n"));
 
             boolean foundHeader = false;
             List<String> headers = new ArrayList<>();
@@ -140,11 +142,21 @@ public class CSVCleaner extends AbstractProcessor {
                         headers.add(field);
                     }
                     getLogger().debug("Found headers: " + headers.toString());
+                    csvWriter.printRecord(headers.toArray());
+                    csvWriter.println();
                 } else if (isHeaderLine(record, schema)) {
                     getLogger().debug("Skipping!");
                     continue;
                 } else {
                     getLogger().debug("Got record?");
+                    if (testRecordAgainstSchema(record, headers, schema)) {
+                        List<String> values = new ArrayList<>();
+                        for (String value : record) {
+                            values.add(value);
+                        }
+                        csvWriter.printRecord(values.toArray());
+                        csvWriter.println();
+                    }
                 }
             }
 
@@ -182,5 +194,23 @@ public class CSVCleaner extends AbstractProcessor {
         }
 
         return matchCount == ceiling;
+    }
+
+    private boolean testRecordAgainstSchema(CSVRecord record, List<String> headers, RecordSchema schema) {
+        if (record.size() != headers.size()) {
+            return false;
+        }
+
+        Map<String, Object> obj = new HashMap<>();
+        for (int x = 0; x < record.size(); x++) {
+            obj.put(headers.get(x), record.get(x));
+        }
+
+        try {
+            new MapRecord(schema, obj);
+            return true;
+        } catch (Exception ex) {
+            return false;
+        }
     }
 }
