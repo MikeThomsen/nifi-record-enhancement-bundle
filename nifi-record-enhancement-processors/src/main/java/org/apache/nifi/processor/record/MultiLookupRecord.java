@@ -136,7 +136,7 @@ public class MultiLookupRecord extends AbstractProcessor {
             throw new ProcessException("Name must be in format \"<operation_name>.<property>\"");
         }
 
-        PropertyDescriptor.Builder builder = new PropertyDescriptor.Builder().name(name).required(true);
+        PropertyDescriptor.Builder builder = new PropertyDescriptor.Builder().name(name).required(false);
 
         if (split[1].equals("lookup_service")) {
             builder.addValidator(Validator.VALID)
