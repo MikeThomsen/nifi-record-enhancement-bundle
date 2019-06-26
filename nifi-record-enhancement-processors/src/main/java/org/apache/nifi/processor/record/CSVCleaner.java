@@ -174,7 +174,7 @@ public class CSVCleaner extends AbstractProcessor {
                     if (testRecordAgainstSchema(record, headers, schema, validator)) {
                         List<String> values = new ArrayList<>();
                         for (String value : record) {
-                            values.add(value);
+                            values.add(value.replaceAll("\\n\\r", "\\\\n"));
                         }
                         csvWriter.printRecord(values.toArray());
                         added++;
